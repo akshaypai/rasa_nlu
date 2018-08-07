@@ -3,47 +3,95 @@ from __future__ import division
 from __future__ import print_function
 from __future__ import unicode_literals
 
-import os
-import io
-import json
-import logging
-import typing
 import datetime
-from typing import Any
-from typing import Dict
+import logging
+from inspect import getmembers
+
+import typing
+from typing import Any, Dict
 from typing import List
 from typing import Optional
 from typing import Text
 
-from builtins import str
-
-from rasa_nlu.config import RasaNLUConfig
+from rasa_nlu.config import RasaNLUModelConfig
 from rasa_nlu.extractors import EntityExtractor
 from rasa_nlu.model import Metadata
-from inspect import getmembers
-
 from rasa_nlu.training_data import Message
 
 if typing.TYPE_CHECKING:
     from duckling import DucklingWrapper
 
 
+def extract_value(match):
+    if match["value"].get("type") == "interval":
+        value = {"to": match["value"].get("to", {}).get("value"),
+                 "from": match["value"].get("from", {}).get("value")}
+    else:
+        value = match["value"].get("value")
+
+    return value
+
+
+def filter_irrelevant_matches(matches, requested_dimensions):
+    """Only return dimensions the user configured"""
+
+    if requested_dimensions:
+        return [match
+                for match in matches
+                if match["dim"] in requested_dimensions]
+    else:
+        return matches
+
+
+def convert_duckling_format_to_rasa(matches):
+    extracted = []
+
+    for match in matches:
+        value = extract_value(match)
+        entity = {"start": match["start"],
+                  "end": match["end"],
+                  "text": match.get("body", match.get("text", None)),
+                  "value": value,
+                  "confidence": 1.0,
+                  "additional_info": match["value"],
+                  "entity": match["dim"]}
+
+        extracted.append(entity)
+
+    return extracted
+
+
+def current_datetime_str():
+    current_time = datetime.datetime.utcnow()
+    return current_time.strftime('%Y-%m-%dT%H:%M:%S+00:00')
+
+
 class DucklingExtractor(EntityExtractor):
-    """Adds entity normalization by analyzing found entities and transforming them into regular formats."""
+    """Adds entity normalization by analyzing found entities and
+    transforming them into regular formats."""
 
     name = "ner_duckling"
 
     provides = ["entities"]
 
+    defaults = {
+        # by default all dimensions recognized by duckling are returned
+        # dimensions can be configured to contain an array of strings
+        # with the names of the dimensions to filter for
+        "dimensions": None
+    }
+
     @staticmethod
     def available_dimensions():
         from duckling.dim import Dim
-        return [m[1] for m in getmembers(Dim) if not m[0].startswith("__") and not m[0].endswith("__")]
+        return [m[1]
+                for m in getmembers(Dim)
+                if not m[0].startswith("__") and not m[0].endswith("__")]
 
-    def __init__(self, duckling, dimensions=None):
-        # type: (DucklingWrapper, Optional[List[Text]]) -> None
+    def __init__(self, component_config=None, duckling=None):
+        # type: (Dict[Text, Any], DucklingWrapper) -> None
 
-        self.dimensions = dimensions if dimensions is not None else self.available_dimensions()
+        super(DucklingExtractor, self).__init__(component_config)
         self.duckling = duckling
 
     @classmethod
@@ -52,88 +100,98 @@ class DucklingExtractor(EntityExtractor):
         return ["duckling"]
 
     @classmethod
-    def _create_duckling_wrapper(cls, language):
+    def create_duckling_wrapper(cls, language):
         from duckling import DucklingWrapper
 
         try:
-            return DucklingWrapper(language=language)  # languages in duckling are eg "de$core"
-        except ValueError as e:     # pragma: no cover
+            # languages in duckling are eg "de$core"
+            return DucklingWrapper(language=language)
+        except ValueError as e:  # pragma: no cover
             raise Exception("Duckling error. {}".format(e))
 
     @classmethod
     def create(cls, config):
-        # type: (RasaNLUConfig) -> DucklingExtractor
+        # type: (RasaNLUModelConfig) -> DucklingExtractor
 
-        dims = config["duckling_dimensions"]
+        component_config = config.for_component(cls.name, cls.defaults)
+        dims = component_config.get("dimensions")
         if dims:
-            unknown_dimensions = [dim for dim in dims if dim not in cls.available_dimensions()]
+            unknown_dimensions = [dim
+                                  for dim in dims
+                                  if dim not in cls.available_dimensions()]
             if len(unknown_dimensions) > 0:
-                raise ValueError("Invalid duckling dimension. Got '{}'. Allowed: {}".format(
-                    ", ".join(unknown_dimensions), ", ".join(cls.available_dimensions())))
+                raise ValueError(
+                        "Invalid duckling dimension. Got '{}'. Allowed: {}"
+                        "".format(", ".join(unknown_dimensions),
+                                  ", ".join(cls.available_dimensions())))
 
-        return DucklingExtractor(cls._create_duckling_wrapper(config["language"]), dims)
+        wrapper = cls.create_duckling_wrapper(config["language"])
+        return DucklingExtractor(component_config, wrapper)
 
     @classmethod
     def cache_key(cls, model_metadata):
-        # type: (Metadata) -> Text
+        # type: (Metadata) -> Optional[Text]
 
-        return cls.name + "-" + model_metadata.language
+        return None
+
+    @staticmethod
+    def reference_time_from_message(message):
+        # fallback to current time by default
+        ref_time = current_datetime_str()
+
+        if message.time is not None:
+            # check if time given is valid
+            try:
+                ref_time = datetime.datetime \
+                    .utcfromtimestamp(int(message.time) / 1000.0) \
+                    .strftime('%Y-%m-%dT%H:%M:%S+00:00')
+                logging.debug("Passing reference time {} "
+                              "to duckling".format(ref_time))
+            except Exception as e:
+                logging.warning("Could not parse timestamp {}. Instead "
+                                "current UTC time {} will be passed to "
+                                "duckling. Error: {}"
+                                "".format(message.time, ref_time, e))
+        return ref_time
 
     def process(self, message, **kwargs):
         # type: (Message, **Any) -> None
 
-        extracted = []
-        if self.duckling is not None:
-            ref_time = datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S+00:00')
-            if message.time is not None:
-                # check if time given is valid
-                try:
-                    ref_time = datetime.datetime\
-                        .utcfromtimestamp(int(message.time)/1000.0)\
-                        .strftime('%Y-%m-%dT%H:%M:%S+00:00')
-                    logging.debug(
-                            "Passing reference time {} to duckling".format(ref_time))
-                except Exception as e:
-                    logging.warning(
-                            "Could not parse timestamp {}. "
-                            "Instead current UTC time {} will be passed to duckling".format(message.time, ref_time))
+        if self.duckling is None:
+            return
 
+        ref_time = self.reference_time_from_message(message)
+
+        try:
             matches = self.duckling.parse(message.text, reference_time=ref_time)
-            relevant_matches = [match for match in matches if match["dim"] in self.dimensions]
-            for match in relevant_matches:
-                entity = {"start": match["start"],
-                          "end": match["end"],
-                          "text": match["text"],
-                          "value": match["value"]["value"],
-                          "additional_info": match["value"],
-                          "entity": match["dim"]}
+        except Exception as e:
+            logging.warn("Invalid Duckling parse. Error {e}", e)
+            matches = []
 
-                extracted.append(entity)
+        dimensions = self.component_config["dimensions"]
+        relevant_matches = filter_irrelevant_matches(matches, dimensions)
+
+        extracted = convert_duckling_format_to_rasa(relevant_matches)
 
         extracted = self.add_extractor_name(extracted)
-        message.set("entities", message.get("entities", []) + extracted, add_to_output=True)
 
-    def persist(self, model_dir):
-        # type: (Text) -> Dict[Text, Any]
-
-        file_name = self.name+".json"
-        full_name = os.path.join(model_dir, file_name)
-        with io.open(full_name, 'w') as f:
-            f.write(str(json.dumps({"dimensions": self.dimensions})))
-        return {"ner_duckling_persisted": file_name}
+        message.set("entities", message.get("entities", []) + extracted,
+                    add_to_output=True)
 
     @classmethod
-    def load(cls, model_dir, model_metadata, cached_component, **kwargs):
-        # type: (Text, Metadata, Optional[DucklingExtractor], **Any) -> DucklingExtractor
+    def load(cls,
+             model_dir=None,  # type: Text
+             model_metadata=None,  # type: Metadata
+             cached_component=None,  # type: Optional[DucklingExtractor]
+             **kwargs  # type: **Any
+             ):
+        # type: (...) -> DucklingExtractor
 
-        persisted = os.path.join(model_dir, model_metadata.get("ner_duckling_persisted"))
         if cached_component:
             duckling = cached_component.duckling
         else:
-            duckling = cls._create_duckling_wrapper(model_metadata.get("language"))
+            language = model_metadata.get("language")
+            duckling = cls.create_duckling_wrapper(language)
 
-        if os.path.isfile(persisted):
-            with io.open(persisted, encoding='utf-8') as f:
-                persisted_data = json.loads(f.read())
-                return DucklingExtractor(duckling, persisted_data["dimensions"])
-        return DucklingExtractor(duckling)
+        component_config = model_metadata.for_component(cls.name)
+        return cls(component_config, duckling)

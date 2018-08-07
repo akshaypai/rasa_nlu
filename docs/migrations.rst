@@ -1,11 +1,76 @@
+:desc: Updating your Rasa NLU Project to a New Version
 Migration Guide
 ===============
 This page contains information about changes between major versions and
 how you can migrate from one version to another.
 
-0.9.x to master
----------------
+0.12.x to 0.13.0
+----------------
 
+.. warning::
+
+  This is a release **breaking backwards compatibility**.
+  Unfortunately, it is not possible to load previously trained models as
+  the parameters for the tensorflow and CRF models changed.
+
+0.11.x to 0.12.0
+----------------
+
+.. warning::
+
+  This is a release **breaking backwards compatibility**.
+  Unfortunately, it is not possible to load
+  previously trained models (as the stored file formats have changed as
+  well as the configuration and metadata). Please make sure to retrain
+  a model before trying to use it with this improved version.
+
+model configuration
+~~~~~~~~~~~~~~~~~~~
+We have split the configuration in a model configuration and parameters used
+to configure the server, train, and evaluate scripts. The configuration
+file now only contains the ``pipeline`` as well as the ``language``
+parameters. Example:
+
+  .. code-block:: yaml
+
+      langauge: "en"
+
+      pipeline:
+      - name: "nlp_spacy"
+        model: "en"               # parameter of the spacy component
+      - name: "ner_synonyms"
+
+
+All other parameters have either been moved to the scripts
+for training (:ref:`train_parameters`), serving models
+(:ref:`server_parameters`), or put into the pipeline
+configuration (:ref:`section_pipeline`).
+
+persistors:
+~~~~~~~~~~~
+- renamed ``AWS_REGION`` to ``AWS_DEFAULT_REGION``
+- always make sure to specify the bucket using env ``BUCKET_NAME``
+- are now configured solely over environment variables
+
+0.9.x to 0.10.0
+---------------
+- We introduced a new concept called a ``project``. You can have multiple versions
+  of a model trained for a project. E.g. you can train an initial model and
+  add more training data and retrain that project. This will result in a new
+  model version for the same project. This allows you to, allways request
+  the latest model version from the http server and makes the model handling
+  more structured.
+- If you want to reuse trained models you need to move them in a directory named
+  after the project. E.g. if you already got a trained model in directory ``my_root/model_20170628-002704``
+  you need to move that to ``my_root/my_project/model_20170628-002704``. Your
+  new projects name will be ``my_project`` and you can query the model using the
+  http server using ``curl http://localhost:5000/parse?q=hello%20there&project=my_project``
+- Docs moved to https://rasahq.github.io/rasa_nlu/
+- Renamed ``name`` parameter to ``project``. This means for training requests you now need to pass the ``project parameter
+  instead of ``name``, e.g. ``POST /train?project=my_project_name`` with the body of the
+  request containing the training data
+- Adapted remote cloud storages to support projects. This is a backwards incompatible change,
+  and unfortunately you need to retrain uploaded models and reupload them.
 
 0.8.x to 0.9.x
 ---------------

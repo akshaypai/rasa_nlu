@@ -1,241 +1,137 @@
+:desc: Customizing Your Rasa NLU Configuration
 .. _section_configuration:
 
-Configuration
-=============
+Server Configuration
+====================
 
-You can provide options to rasa NLU through:
 
-- a json-formatted config file
-- environment variables
-- command line arguments
+.. note::
 
-Environment variables override options in your config file, 
-and command line args will override any options specified elsewhere.
-Environment variables are capitalised and prefixed with ``RASA_``, 
-so the option ``pipeline`` is specified with the ``RASA_PIPELINE`` env var.
+    Before you can use the server, you should train a model!
+    See :ref:`training_your_model`
 
-Default
--------
-Here is the default configuration including all available parameters:
 
-.. literalinclude:: ../config_defaults.json
-    :language: json
+.. note::
 
-Options
--------
-A short explanation and examples for each configuration value.
+    In older versions of Rasa NLU, the server and models were configured with a single file.
+    Now, the server only takes command line arguments (see :ref:`server_parameters`).
+    The configuration file only refers to the model that you want to train,
+    i.e. the pipeline and components. 
 
-name
-~~~~
 
-:Type: ``str``
-:Examples: ``"my_model_name"``
-:Description:
-     Defines a models name used to store it and to refere to it when using the http server.
-     The default is ``null`` which will lead to a generated model name, e.g. ``"model_20170426-230305"``.
+Running the server
+------------------
 
-pipeline
-~~~~~~~~
+You can run a simple http server that handles requests using your projects with :
 
-:Type: ``str`` or ``[str]``
-:Examples:
-    ``"mitie"`` or
-    ``["nlp_spacy", "ner_spacy", "ner_synonyms"]``
+.. code-block:: bash
 
-:Description:
-    The pipeline used for training. Can either be a template (passing a string) or a list of components (array). For all
-    available templates, see :ref:`section_pipeline`.
+    $ python -m rasa_nlu.server --path projects
 
-language
-~~~~~~~~
+The server will look for existing projects under the folder defined by
+the ``path`` parameter. By default a project will load the latest
+trained model.
 
-:Type: ``str``
-:Examples: ``"en"`` or ``"de"``
-:Description:
-    Language the model is trained in. Underlying word vectors will be loaded by using this language
+.. _section_http_config:
 
-num_threads
-~~~~~~~~~~~
+Serving Multiple Apps
+---------------------
 
-:Type: ``int``
-:Examples: ``4``
-:Description:
-    Number of threads used during training (not supported by all components, though.
-    Some of them might still be single threaded!).
+Depending on your choice of backend, Rasa NLU can use quite a lot of memory.
+So if you are serving multiple models in production, you want to serve these
+from the same process & avoid duplicating the memory load.
 
-path
-~~~~
+.. note::
 
-:Type: ``str``
-:Examples: ``"models/"``
-:Description:
-    Directory where trained models will be saved to (training) and loaded from (http server).
+    Although this saves the backend from loading the same set of word vectors twice,
+    if you have projects in multiple languages your memory usage will still be high.
 
-response_log
-~~~~~~~~~~~~
 
-:Type: ``str`` or ``null``
-:Examples: ``"logs/"``
-:Description:
-    Directory where logs will be saved (containing queries and responses).
-    If set to ``null`` logging will be disabled.
+As stated previously, Rasa NLU naturally handles serving multiple apps.
+By default the server will load all projects found
+under the ``path`` directory passed at run time. 
 
-config
-~~~~~~
+Rasa NLU naturally handles serving multiple apps, by default the server will load all projects found
+under the directory specified with ``--path`` option. unless you have provide ``--pre_load`` option 
+to load a specific project. 
 
-:Type: ``str``
-:Examples: ``"config_spacy.json"``
-:Description:
-    Location of the configuration file (can only be set as env var or command line option).
+.. code-block:: console
 
-log_level
-~~~~~~~~~
+    $ # This will load all projects under projects/ directory
+    $ python -m rasa_nlu.server -c config.yaml --path projects/ 
 
-:Type: ``str``
-:Examples: ``"DEBUG"``
-:Description:
-    Log level used to output messages from the framework internals.
+.. code-block:: console
 
-port
-~~~~
+    $ # This will load only hotels project under projects/ directory
+    $ python -m rasa_nlu.server -c config.yaml --pre_load hotels --path projects/ 
 
-:Type: ``int``
-:Examples: ``5000``
-:Description:
-    Port on which to run the http server.
 
-data
-~~~~
+The file structure under ``path directory`` is as follows:
 
-:Type: ``str``
-:Examples: ``"data/example.json"``
-:Description:
-    Location of the training data.
+.. code-block:: text
 
-cors_origins
-~~~~
+    - <path>
+     - <project_A>
+      - <model_XXXXXX>
+      - <model_XXXXXX>
+       ...
+     - <project_B>
+      - <model_XXXXXX>
+       ...
+      ...
 
-:Type: ``list``
-:Examples: ``['*']``, ``['*.mydomain.com', 'api.domain2.net']``
-:Description:
-    List of domain patterns from where CORS (cross-origin resource sharing) calls are allowed. 
-    The default value is ``[]`` which forbids all CORS requests.
+You can specify which project to use in your ``/parse`` requests:
 
-emulate
-~~~~~~~
+.. code-block:: console
 
-:Type: ``str``
-:Examples: ``"wit"``, ``"luis"`` or ``"api"``
-:Description:
-    Format to be returned by the http server. If ``null`` (default) the rasa NLU internal format will be used.
-    Otherwise, the output will be formatted according to the API specified.
+    $ curl 'localhost:5000/parse?q=hello&project=my_restaurant_search_bot'
 
-mitie_file
-~~~~~~~~~~
+or
 
-:Type: ``str``
-:Examples: ``"data/total_word_feature_extractor.dat"``
-:Description:
-    File containing ``total_word_feature_extractor.dat`` (see :ref:`section_backends`)
+.. code-block:: console
 
-spacy_model_name
-~~~~~~~~~~~~~~~~
+    $ curl -XPOST localhost:5000/parse -d '{"q":"I am looking for Chinese food", "project":"my_restaurant_search_bot"}'
 
-:Type: ``str``
-:Examples: ``"en_core_web_sm"``
-:Description:
-    If the spacy model to be used has a name that is different from the language tag (``"en"``, ``"de"``, etc.),
-    the model name can be specified using this configuration variable. The name will be passed to ``spacy.load(name)``.
+You can also specify the model you want to use for a given project, the default used being the latest trained:
 
-server_model_dirs
-~~~~~~~~~~~~~~~~~
+.. code-block:: console
 
-:Type: ``str``
-:Examples: ``"models/"``
-:Description:
-    Directory containing the model to be used by server or an object describing multiple models.
-    see :ref:`HTTP server config<section_http_config>`
+    $ curl -XPOST localhost:5000/parse -d '{"q":"I am looking for Chinese food", "project":"my_restaurant_search_bot", "model":<model_XXXXXX>}'
 
-token
-~~~~~
+If no project is found by the server under the ``path`` directory, a ``"default"`` one will be used, using a simple fallback model.
 
-:Type: ``str`` or ``null``
-:Examples: ``"asd2aw3r"``
-:Description:
-    if set, all requests to server must have a ``?token=<token>`` query param. see :ref:`section_auth`
+.. _server_parameters:
 
-max_number_of_ngrams
-~~~~~~~~~~~~~~~~~~~~
+Server Parameters
+-----------------
 
-:Type: ``int``
-:Examples: ``10``
-:Description:
-    Maximum number of ngrams to use when augmenting feature vectors with character ngrams
-    (``intent_featurizer_ngrams`` component only)
+There are a number of parameters you can pass when running the server.
 
-.. _section_configuration_duckling_dimensions:
+.. code-block:: console
 
-duckling_dimensions
-~~~~~~~~~~~~~~~~~~~
+    $ python -m rasa_nlu.server
 
-:Type: ``list``
-:Examples: ``["time", "number", "amount-of-money", "distance"]``
-:Description:
-    Defines which dimensions, i.e. entity types, the :ref:`duckling component <section_pipeline_duckling>` will extract.
-    A full list of available dimensions can be found in the `duckling documentation <https://duckling.wit.ai/>`_.
+Here is a quick overview:
 
-storage
-~~~~~~~
+.. program-output:: python -m rasa_nlu.server --help
 
-:Type: ``str``
-:Examples: ``"aws"`` or ``"gcs"``
-:Description:
-    Storage type for persistor. See :ref:`section_persistence` for more details.
 
-bucket_name
-~~~~~~~~~~~
+.. _section_auth:
 
-:Type: ``str``
-:Examples: ``"my_models"``
-:Description:
-    Name of the bucket in the cloud to store the models. If the specified bucket name does not exist, rasa will create it.
-    See :ref:`section_persistence` for more details.
+Authentication
+--------------
+To protect your server, you can specify a token in your Rasa NLU configuration,
+by passing the ``--token`` argument when starting the server,
+or by setting the ``RASA_TOKEN`` environment variable.
+If set, this token must be passed as a query parameter in all requests, e.g. :
 
-aws_region
-~~~~~~~~~~
+.. code-block:: bash
 
-:Type: ``str``
-:Examples: ``"us-east-1"``
-:Description:
-    Name of the aws region to use. This is used only when ``"storage"`` is selected as ``"aws"``.
-    See :ref:`section_persistence` for more details.
+    $ curl localhost:5000/status?token=12345
 
-aws_endpoint_url
-~~~~~~~~~~
+CORS
+----
 
-:Type: ``str``
-:Examples: ``"http://10.0.0.1:9000"``
-:Description:
-    Optional endpoint of the custom S3 compatible storage provider. This is used only when ``"storage"`` is selected as ``"aws"``.
-    See :ref:`section_persistence` for more details.
+By default CORS (cross-origin resource sharing) calls are not allowed. If you want to call your Rasa NLU server from another domain (for example from a training web UI) then you can whitelist that domain by adding it to the config value ``cors_origin``.
 
-entity_crf_features
-~~~~~~~~~~~~~~~~~~~
 
-:Type: ``[[str]]``
-:Examples: ``[["low", "title"], ["bias", "word3"], ["upper", "pos", "pos2"]]``
-:Description:
-    The features are a ``[before, word, after]`` array with before, word, after holding keys about which
-    features to use for each word, for example, ``"title"`` in array before will have the feature
-    "is the preceding word in title case?".
-    Available features are:
-    ``low``, ``title``, ``word3``, ``word2``, ``pos``, ``pos2``, ``bias``, ``upper`` and ``digit``
-
-entitiy_crf_BILOU_flag
-~~~~~~~~~~~~~~~~~~~~~~
-
-:Type: ``bool``
-:Examples: ``true``
-:Description:
-     The flag determines whether to use BILOU tagging or not. BILOU tagging is more rigorous however
-     requires more examples per entity. Rule of thumb: use only if more than 100 examples per entity.
